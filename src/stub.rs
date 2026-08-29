@@ -562,11 +562,20 @@ fn stub_gettimeofday(uc: &mut Unicorn<'_, RuntimeState>) -> Result<(), VmError> 
         )));
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let sec = now.as_secs();
-    let usec = now.subsec_micros() as i64;
+    // clean-room RE: allow a fixed clock so OTP inputs are controllable/deterministic.
+    // Priority: the process-global BATCH_TIME (set by batch loops) > EMU_FAKE_TIME env.
+    let batch = crate::adi::BATCH_TIME.load(std::sync::atomic::Ordering::Relaxed);
+    let (sec, usec): (u64, i64) = if batch != 0 {
+        (batch, 0)
+    } else {
+        match std::env::var("EMU_FAKE_TIME") {
+            Ok(v) if !v.is_empty() => (v.parse().unwrap_or(0), 0),
+            _ => {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                (now.as_secs(), now.subsec_micros() as i64)
+            }
+        }
+    };
 
     let mut timeval = [0_u8; 16];
     timeval[0..8].copy_from_slice(&sec.to_le_bytes());

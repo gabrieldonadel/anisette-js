@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use goblin::elf::program_header::PT_LOAD;
 use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::{Elf, Reloc};
-use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission, uc_error};
+use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Prot, uc_error};
 use unicorn_engine::{RegisterARM64, Unicorn};
 
 use crate::constants::{
@@ -17,6 +17,18 @@ use crate::runtime::{LoadedLibrary, RuntimeState, SymbolEntry};
 use crate::stub::dispatch_import_stub;
 use crate::util::{add_i64, align_down, align_up, as_usize};
 
+// clean-room RE: the 32 registers captured per-instruction, in order [X0..X30, SP].
+const REG_SNAPSHOT: [RegisterARM64; 32] = [
+    RegisterARM64::X0, RegisterARM64::X1, RegisterARM64::X2, RegisterARM64::X3,
+    RegisterARM64::X4, RegisterARM64::X5, RegisterARM64::X6, RegisterARM64::X7,
+    RegisterARM64::X8, RegisterARM64::X9, RegisterARM64::X10, RegisterARM64::X11,
+    RegisterARM64::X12, RegisterARM64::X13, RegisterARM64::X14, RegisterARM64::X15,
+    RegisterARM64::X16, RegisterARM64::X17, RegisterARM64::X18, RegisterARM64::X19,
+    RegisterARM64::X20, RegisterARM64::X21, RegisterARM64::X22, RegisterARM64::X23,
+    RegisterARM64::X24, RegisterARM64::X25, RegisterARM64::X26, RegisterARM64::X27,
+    RegisterARM64::X28, RegisterARM64::X29, RegisterARM64::X30, RegisterARM64::SP,
+];
+
 pub struct EmuCore {
     uc: Unicorn<'static, RuntimeState>,
 }
@@ -25,13 +37,13 @@ impl EmuCore {
     pub fn new_arm64() -> Result<Self, VmError> {
         let mut uc = Unicorn::new_with_data(Arch::ARM64, Mode::ARM, RuntimeState::new())?;
 
-        uc.mem_map(RETURN_ADDRESS, as_usize(PAGE_SIZE)?, Permission::ALL)?;
-        uc.mem_map(MALLOC_ADDRESS, as_usize(MALLOC_SIZE)?, Permission::ALL)?;
-        uc.mem_map(STACK_ADDRESS, as_usize(STACK_SIZE)?, Permission::ALL)?;
+        uc.mem_map(RETURN_ADDRESS, PAGE_SIZE, Prot::ALL)?;
+        uc.mem_map(MALLOC_ADDRESS, MALLOC_SIZE, Prot::ALL)?;
+        uc.mem_map(STACK_ADDRESS, STACK_SIZE, Prot::ALL)?;
 
         for i in 0..IMPORT_LIBRARY_COUNT {
             let base = IMPORT_ADDRESS + (i as u64) * IMPORT_LIBRARY_STRIDE;
-            uc.mem_map(base, as_usize(IMPORT_SIZE)?, Permission::ALL)?;
+            uc.mem_map(base, IMPORT_SIZE, Prot::ALL)?;
 
             let mut stubs = vec![0_u8; IMPORT_SIZE as usize];
             for chunk in stubs.chunks_mut(4) {
@@ -58,6 +70,64 @@ impl EmuCore {
                 false
             },
         )?;
+
+        // clean-room RE: record every guest memory write (tagged with the current
+        // instruction-tape position) when tracing is armed.
+        uc.add_mem_hook(
+            HookType::MEM_WRITE,
+            1,
+            0,
+            |uc, _access, address, size, value| {
+                let st = uc.get_data_mut();
+                let pc_idx = st.pc_trace.as_ref().map(|v| v.len() as u64).unwrap_or(0);
+                if let Some(w) = st.mem_writes.as_mut() {
+                    w.push((address, size as u32, value, pc_idx));
+                }
+                true
+            },
+        )?;
+
+        // clean-room RE: record the executed instruction tape (pc, opcode) when armed.
+        // Dynamic tracing defeats control-flow flattening: the tape is the real path.
+        uc.add_code_hook(1, 0, |uc, address, _size| {
+            // clean-room RE (DFA): lightweight fault injection, independent of tracing.
+            let fault = uc.get_data().fault;
+            if let Some((tgt, col, mask)) = fault {
+                let c = uc.get_data().fault_counter;
+                if c == tgt {
+                    let reg = REG_SNAPSHOT[col];
+                    let v = uc.reg_read(reg).unwrap_or(0);
+                    let _ = uc.reg_write(reg, v ^ mask);
+                }
+                uc.get_data_mut().fault_counter = c + 1;
+            }
+            if uc.get_data().pc_trace.is_some() {
+                let mut op = [0u8; 4];
+                let opcode = match uc.mem_read(address, &mut op) {
+                    Ok(()) => u32::from_le_bytes(op),
+                    Err(_) => 0,
+                };
+                // clean-room RE: pre-execution register snapshot [X0..X30, SP],
+                // index-aligned with pc_trace. Read regs (immutable) before the
+                // mutable borrow to push.
+                let snap: Option<[u64; 32]> = if uc.get_data().reg_trace.is_some() {
+                    let mut s = [0u64; 32];
+                    for (i, r) in REG_SNAPSHOT.iter().enumerate() {
+                        s[i] = uc.reg_read(*r).unwrap_or(0);
+                    }
+                    Some(s)
+                } else {
+                    None
+                };
+                let st = uc.get_data_mut();
+                if let Some(t) = st.pc_trace.as_mut() {
+                    t.push((address, opcode));
+                }
+                if let (Some(s), Some(rt)) = (snap, st.reg_trace.as_mut()) {
+                    rt.push(s);
+                }
+            }
+        })?;
 
         Ok(Self { uc })
     }
@@ -105,6 +175,75 @@ impl EmuCore {
         self.uc.reg_write(RegisterARM64::LR, RETURN_ADDRESS)?;
         self.uc.emu_start(address, RETURN_ADDRESS, 0, 0)?;
         Ok(self.uc.reg_read(RegisterARM64::X0)?)
+    }
+
+    /// clean-room RE: arm recording of writes AND the instruction tape. When
+    /// EMU_TRACE_REGS is set, also arm the per-instruction register snapshot.
+    pub fn arm_write_trace(&mut self) {
+        let regs = std::env::var("EMU_TRACE_REGS").map(|v| !v.is_empty()).unwrap_or(false);
+        let st = self.uc.get_data_mut();
+        st.mem_writes = Some(Vec::new());
+        st.pc_trace = Some(Vec::new());
+        st.reg_trace = if regs { Some(Vec::new()) } else { None };
+    }
+
+    /// clean-room RE: stop recording and return (writes, instruction_tape).
+    pub fn take_write_trace(&mut self) -> (Vec<(u64, u32, i64, u64)>, Vec<(u64, u32)>) {
+        let st = self.uc.get_data_mut();
+        (
+            st.mem_writes.take().unwrap_or_default(),
+            st.pc_trace.take().unwrap_or_default(),
+        )
+    }
+
+    /// clean-room RE: take the per-instruction register snapshots (if armed).
+    pub fn take_reg_trace(&mut self) -> Vec<[u64; 32]> {
+        self.uc.get_data_mut().reg_trace.take().unwrap_or_default()
+    }
+
+    /// clean-room RE (DFA): arm a fault XORing `mask` into column `col` at `target`.
+    pub fn arm_fault(&mut self, target: u64, col: usize, mask: u64) {
+        let st = self.uc.get_data_mut();
+        st.fault = Some((target, col, mask));
+        st.fault_counter = 0;
+    }
+
+    /// clean-room RE (DFA): disarm the fault.
+    pub fn disarm_fault(&mut self) {
+        self.uc.get_data_mut().fault = None;
+    }
+
+    /// perf: reclaim per-request bump allocations so many OTP requests can run in one
+    /// process without reloading the library. First call captures the post-init marks;
+    /// later calls unmap temp pages allocated since and roll both allocators back.
+    pub fn reclaim_request_allocs(&mut self) -> Result<(), VmError> {
+        let (temp_mark, malloc_mark, temp_base, temp_cur) = {
+            let st = self.uc.get_data();
+            (
+                st.temp_mark,
+                st.malloc_mark,
+                st.temp_allocator.base(),
+                st.temp_allocator.mark(),
+            )
+        };
+        match temp_mark {
+            None => {
+                let st = self.uc.get_data_mut();
+                st.temp_mark = Some(st.temp_allocator.mark());
+                st.malloc_mark = Some(st.malloc_allocator.mark());
+            }
+            Some(tm) => {
+                // temp pages are individually mem_mapped; unmap those above the mark.
+                if temp_cur > tm {
+                    let _ = self.uc.mem_unmap(temp_base + tm, temp_cur - tm);
+                }
+                let mm = malloc_mark.unwrap_or(0);
+                let st = self.uc.get_data_mut();
+                st.temp_allocator.reset_to(tm);
+                st.malloc_allocator.reset_to(mm); // malloc region stays mapped
+            }
+        }
+        Ok(())
     }
 
     pub fn alloc_data(&mut self, data: &[u8]) -> Result<u64, VmError> {
@@ -212,7 +351,7 @@ fn alloc_temp_bytes(
         "Allocating at 0x{address:X}; bytes 0x{:X}/0x{length:X}",
         data.len()
     ));
-    uc.mem_map(address, as_usize(length)?, Permission::ALL)?;
+    uc.mem_map(address, length, Prot::ALL)?;
 
     let mut buffer = vec![padding_byte; length as usize];
     if !data.is_empty() {
@@ -306,7 +445,7 @@ pub(crate) fn load_library_by_name(
             ));
             continue;
         }
-        match uc.mem_map(map_start, as_usize(map_len)?, Permission::ALL) {
+        match uc.mem_map(map_start, map_len, Prot::ALL) {
             Ok(()) => {}
             Err(uc_error::MAP) => {}
             Err(err) => return Err(err.into()),

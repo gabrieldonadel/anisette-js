@@ -32,6 +32,20 @@ impl Allocator {
         self.offset = next;
         Ok(address)
     }
+
+    /// perf: current bump offset (a reclaim mark).
+    pub fn mark(&self) -> u64 {
+        self.offset
+    }
+
+    /// perf: roll the bump pointer back to a previously captured mark.
+    pub fn reset_to(&mut self, offset: u64) {
+        self.offset = offset;
+    }
+
+    pub fn base(&self) -> u64 {
+        self.base
+    }
 }
 
 #[cfg(test)]

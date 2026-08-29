@@ -16,7 +16,7 @@ mod runtime;
 mod stub;
 mod util;
 
-pub use adi::{Adi, AdiInit, OtpResult, ProvisioningStartResult};
+pub use adi::{Adi, AdiInit, BATCH_TIME, OtpResult, ProvisioningStartResult};
 pub use allocator::Allocator;
 pub use device::{Device, DeviceData};
 pub use emu::EmuCore;

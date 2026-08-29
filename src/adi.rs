@@ -3,6 +3,11 @@ use crate::emu::{EmuCore, alloc_c_string, ensure_zero_return};
 use crate::errors::VmError;
 use crate::util::bytes_to_hex;
 
+/// clean-room RE: process-global fake clock (seconds). When nonzero, the
+/// gettimeofday stub returns this instead of EMU_FAKE_TIME/real time. Batch
+/// loops set it per iteration to sweep the OTP counter without reloading libs.
+pub static BATCH_TIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct AdiInit {
     pub storeservicescore: Vec<u8>,
     pub coreadi: Vec<u8>,
@@ -213,8 +218,39 @@ impl Adi {
         ensure_zero_return("ADIProvisioningEnd", ret)
     }
 
+    /// clean-room RE: same as request_otp, but records every guest memory write
+    /// during the ADIOTPRequest call and returns them alongside the result.
+    pub fn request_otp_traced(
+        &mut self,
+        dsid: u64,
+    ) -> Result<(OtpResult, Vec<(u64, u32, i64, u64)>, Vec<(u64, u32)>, Vec<[u64; 32]>), VmError> {
+        self.core.arm_write_trace();
+        let res = self.request_otp(dsid);
+        let (writes, pcs) = self.core.take_write_trace();
+        let regs = self.core.take_reg_trace();
+        res.map(|r| (r, writes, pcs, regs))
+    }
+
+    /// clean-room RE (DFA): request an OTP with a single-bit fault injected before the
+    /// `target`-th executed instruction (flip `bit` of register column `col`).
+    pub fn request_otp_faulted(
+        &mut self,
+        dsid: u64,
+        target: u64,
+        col: usize,
+        mask: u64,
+    ) -> Result<OtpResult, VmError> {
+        self.core.arm_fault(target, col, mask);
+        let res = self.request_otp(dsid);
+        self.core.disarm_fault();
+        res
+    }
+
     pub fn request_otp(&mut self, dsid: u64) -> Result<OtpResult, VmError> {
         debug_print("ADI.request_otp");
+        // perf: reclaim the previous request's temp/malloc allocations so we can run
+        // many OTPs in one process without reloading the library (fixes the ~117 limit).
+        self.core.reclaim_request_allocs()?;
         let p_otp = self.core.alloc_temporary(8)?;
         let p_otp_len = self.core.alloc_temporary(4)?;
         let p_mid = self.core.alloc_temporary(8)?;
