@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use goblin::elf::program_header::PT_LOAD;
 use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::{Elf, Reloc};
-use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Prot, uc_error};
+// The ../unicorn (TCI/emscripten) fork names the memory-protection flags `Permission`
+// (stock unicorn 2.1.5 renamed it to `Prot`). Alias so the call sites read `Prot::ALL`.
+use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission as Prot, uc_error};
 use unicorn_engine::{RegisterARM64, Unicorn};
 
 use crate::constants::{
@@ -37,13 +39,13 @@ impl EmuCore {
     pub fn new_arm64() -> Result<Self, VmError> {
         let mut uc = Unicorn::new_with_data(Arch::ARM64, Mode::ARM, RuntimeState::new())?;
 
-        uc.mem_map(RETURN_ADDRESS, PAGE_SIZE, Prot::ALL)?;
-        uc.mem_map(MALLOC_ADDRESS, MALLOC_SIZE, Prot::ALL)?;
-        uc.mem_map(STACK_ADDRESS, STACK_SIZE, Prot::ALL)?;
+        uc.mem_map(RETURN_ADDRESS, PAGE_SIZE.try_into().unwrap(), Prot::ALL)?;
+        uc.mem_map(MALLOC_ADDRESS, MALLOC_SIZE.try_into().unwrap(), Prot::ALL)?;
+        uc.mem_map(STACK_ADDRESS, STACK_SIZE.try_into().unwrap(), Prot::ALL)?;
 
         for i in 0..IMPORT_LIBRARY_COUNT {
             let base = IMPORT_ADDRESS + (i as u64) * IMPORT_LIBRARY_STRIDE;
-            uc.mem_map(base, IMPORT_SIZE, Prot::ALL)?;
+            uc.mem_map(base, IMPORT_SIZE.try_into().unwrap(), Prot::ALL)?;
 
             let mut stubs = vec![0_u8; IMPORT_SIZE as usize];
             for chunk in stubs.chunks_mut(4) {
@@ -235,7 +237,7 @@ impl EmuCore {
             Some(tm) => {
                 // temp pages are individually mem_mapped; unmap those above the mark.
                 if temp_cur > tm {
-                    let _ = self.uc.mem_unmap(temp_base + tm, temp_cur - tm);
+                    let _ = self.uc.mem_unmap(temp_base + tm, (temp_cur - tm).try_into().unwrap());
                 }
                 let mm = malloc_mark.unwrap_or(0);
                 let st = self.uc.get_data_mut();
@@ -351,7 +353,7 @@ fn alloc_temp_bytes(
         "Allocating at 0x{address:X}; bytes 0x{:X}/0x{length:X}",
         data.len()
     ));
-    uc.mem_map(address, length, Prot::ALL)?;
+    uc.mem_map(address, length.try_into().unwrap(), Prot::ALL)?;
 
     let mut buffer = vec![padding_byte; length as usize];
     if !data.is_empty() {
@@ -445,7 +447,7 @@ pub(crate) fn load_library_by_name(
             ));
             continue;
         }
-        match uc.mem_map(map_start, map_len, Prot::ALL) {
+        match uc.mem_map(map_start, map_len.try_into().unwrap(), Prot::ALL) {
             Ok(()) => {}
             Err(uc_error::MAP) => {}
             Err(err) => return Err(err.into()),
