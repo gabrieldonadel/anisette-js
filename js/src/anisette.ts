@@ -197,24 +197,35 @@ export class Anisette {
     this.provisioning = new ProvisioningSession(this.bridge, this.device, this.httpClient);
   }
 
+  // OTP memoization: the body is constant within a 30-second bucket (F-013), so we
+  // only re-emulate when the bucket rolls over. Repeated getData() in a window is ~free.
+  private otpBucket = -1;
+  private otpCache?: { otp: Uint8Array; machineId: Uint8Array };
+
   /** Generate Anisette headers. Throws if not provisioned. */
   async getData(): Promise<AnisetteHeaders> {
-    // Reuse the already-initialized WASM VM across calls. The core's allocation-reclaim
-    // fix (Adi::request_otp reclaims per-request bump allocations) removes the state
-    // accumulation that previously forced a full re-init on every call, so a single
-    // requestOtp suffices — much faster per call. If the VM ever errors (e.g. running
-    // against an older WASM build without the fix), fall back to a full re-init and
-    // retry once, so this is never worse than the previous always-reinit behavior.
-    let result;
-    try {
-      result = this.bridge.requestOtp(this.dsid);
-    } catch {
-      await this.reinitBridge();
-      result = this.bridge.requestOtp(this.dsid);
-    }
-    const { otp, machineId } = result;
-
     const now = new Date();
+    const bucket = Math.floor(now.getTime() / 1000 / 30);
+
+    if (!this.otpCache || bucket !== this.otpBucket) {
+      // Reuse the already-initialized WASM VM across calls. The core's allocation-reclaim
+      // fix (Adi::request_otp reclaims per-request bump allocations) removes the state
+      // accumulation that previously forced a full re-init on every call, so a single
+      // requestOtp suffices — much faster per call. If the VM ever errors (e.g. running
+      // against an older WASM build without the fix), fall back to a full re-init and
+      // retry once, so this is never worse than the previous always-reinit behavior.
+      let result;
+      try {
+        result = this.bridge.requestOtp(this.dsid);
+      } catch {
+        await this.reinitBridge();
+        result = this.bridge.requestOtp(this.dsid);
+      }
+      this.otpCache = { otp: result.otp, machineId: result.machineId };
+      this.otpBucket = bucket;
+    }
+    const { otp, machineId } = this.otpCache;
+
     const tzOffset = -now.getTimezoneOffset();
     const tzSign = tzOffset >= 0 ? "+" : "-";
     const tzHours = String(Math.floor(Math.abs(tzOffset) / 60)).padStart(2, "0");
