@@ -164,9 +164,11 @@ export class Anisette {
     return this.bridge.readVirtualFile(joinPath(this.provisioningPath, "adi.pb"));
   }
 
-  /** Generate Anisette headers. Throws if not provisioned. */
-  async getData(): Promise<AnisetteHeaders> {
-    // Reinit WASM state before each call to avoid emulator corruption on repeated use
+  /**
+   * Rebuild the WASM VM from scratch. This used to run on every getData() to dodge
+   * emulator state corruption on repeated use; it is now only the fallback path.
+   */
+  private async reinitBridge(): Promise<void> {
     const adiPb = readOptionalFile(
       this.bridge,
       joinPath(this.provisioningPath, "adi.pb")
@@ -193,8 +195,24 @@ export class Anisette {
     this.bridge.initFromBlobs(this.libs.storeservicescore, this.libs.coreadi, this.libraryPath, this.provisioningPath, this.identifier);
 
     this.provisioning = new ProvisioningSession(this.bridge, this.device, this.httpClient);
+  }
 
-    const { otp, machineId } = this.bridge.requestOtp(this.dsid);
+  /** Generate Anisette headers. Throws if not provisioned. */
+  async getData(): Promise<AnisetteHeaders> {
+    // Reuse the already-initialized WASM VM across calls. The core's allocation-reclaim
+    // fix (Adi::request_otp reclaims per-request bump allocations) removes the state
+    // accumulation that previously forced a full re-init on every call, so a single
+    // requestOtp suffices — much faster per call. If the VM ever errors (e.g. running
+    // against an older WASM build without the fix), fall back to a full re-init and
+    // retry once, so this is never worse than the previous always-reinit behavior.
+    let result;
+    try {
+      result = this.bridge.requestOtp(this.dsid);
+    } catch {
+      await this.reinitBridge();
+      result = this.bridge.requestOtp(this.dsid);
+    }
+    const { otp, machineId } = result;
 
     const now = new Date();
     const tzOffset = -now.getTimezoneOffset();
