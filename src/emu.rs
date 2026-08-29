@@ -73,6 +73,15 @@ impl EmuCore {
             },
         )?;
 
+        // perf: the RE hooks below fire on EVERY guest instruction / write. Registering
+        // them adds an FFI callback per instruction even when idle, which measurably
+        // slows normal OTP generation. Only register them when RE mode is requested
+        // (tracing or fault injection); the production hot path runs hook-free.
+        let re_mode = ["EMU_TRACE_OTP", "EMU_TRACE_REGS", "EMU_FAULT", "EMU_FAULT_SCAN"]
+            .iter()
+            .any(|k| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
+
+        if re_mode {
         // clean-room RE: record every guest memory write (tagged with the current
         // instruction-tape position) when tracing is armed.
         uc.add_mem_hook(
@@ -130,6 +139,7 @@ impl EmuCore {
                 }
             }
         })?;
+        } // end if re_mode
 
         Ok(Self { uc })
     }
