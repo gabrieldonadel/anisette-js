@@ -216,6 +216,105 @@ export class WasmBridge {
     };
   }
 
+  // ---- Mac path: drive the macOS CoreADI directly (no storeservicescore). ----
+
+  /** Load the macOS CoreADI x86_64 blob. `hostUuid` is 32 hex chars (16 bytes) hashed into the
+   * machine id; pass a per-device value and persist it with the store. */
+  macInit(coreadi: Uint8Array, hostUuid?: string): void {
+    const caPtr = this.allocBytes(coreadi);
+    const hostPtr = this.allocCString(hostUuid ?? null);
+    try {
+      const result = this.m._anisette_mac_init_from_blob(
+        caPtr,
+        coreadi.length,
+        hostPtr
+      ) as number;
+      this.check(result, "anisette_mac_init_from_blob");
+    } finally {
+      this.free(caPtr);
+      this.free(hostPtr);
+    }
+  }
+
+  macInitialize(): void {
+    this.check(this.m._anisette_mac_initialize() as number, "anisette_mac_initialize");
+  }
+
+  macIsProvisioned(dsid: bigint): boolean {
+    const result = this.m._anisette_mac_is_provisioned(dsid) as number;
+    if (result < 0) throw new Error(`anisette_mac_is_provisioned: ${this.getLastError()}`);
+    return result === 1;
+  }
+
+  macStartProvisioning(dsid: bigint, spim: Uint8Array): StartProvisioningResult {
+    const spimPtr = this.allocBytes(spim);
+    try {
+      this.check(
+        this.m._anisette_mac_start_provisioning(dsid, spimPtr, spim.length) as number,
+        "anisette_mac_start_provisioning"
+      );
+    } finally {
+      this.free(spimPtr);
+    }
+    return {
+      cpim: this.readBytes(
+        this.m._anisette_get_cpim_ptr() as number,
+        this.m._anisette_get_cpim_len() as number
+      ),
+      session: this.m._anisette_get_session() as number,
+    };
+  }
+
+  macEndProvisioning(session: number, ptm: Uint8Array, tk: Uint8Array): void {
+    const ptmPtr = this.allocBytes(ptm);
+    const tkPtr = this.allocBytes(tk);
+    try {
+      this.check(
+        this.m._anisette_mac_end_provisioning(
+          session,
+          ptmPtr,
+          ptm.length,
+          tkPtr,
+          tk.length
+        ) as number,
+        "anisette_mac_end_provisioning"
+      );
+    } finally {
+      this.free(ptmPtr);
+      this.free(tkPtr);
+    }
+  }
+
+  macSetRouting(dsid: bigint, routing: bigint): void {
+    this.check(
+      this.m._anisette_mac_set_routing(dsid, routing) as number,
+      "anisette_mac_set_routing"
+    );
+  }
+
+  macGetRouting(dsid: bigint): bigint {
+    this.check(this.m._anisette_mac_get_routing(dsid) as number, "anisette_mac_get_routing");
+    return this.m._anisette_mac_get_routing_value() as bigint;
+  }
+
+  macRequestOtp(dsid: bigint): RequestOtpResult {
+    this.check(this.m._anisette_mac_request_otp(dsid) as number, "anisette_mac_request_otp");
+    return {
+      otp: this.readBytes(
+        this.m._anisette_get_otp_ptr() as number,
+        this.m._anisette_get_otp_len() as number
+      ),
+      machineId: this.readBytes(
+        this.m._anisette_get_mid_ptr() as number,
+        this.m._anisette_get_mid_len() as number
+      ),
+    };
+  }
+
+  macTeardown(): void {
+    this.check(this.m._anisette_mac_teardown() as number, "anisette_mac_teardown");
+  }
+
   /**
    * Check if IDBFS is available (browser environment only).
    */

@@ -7,16 +7,20 @@ pub mod provisioning;
 mod provisioning_wasm;
 
 mod adi;
+mod mac_adi;
+mod arch;
 mod allocator;
 mod constants;
 mod debug;
 mod emu;
+mod macho;
 mod errors;
 mod runtime;
 mod stub;
 mod util;
 
 pub use adi::{Adi, AdiInit, OtpResult, ProvisioningStartResult};
+pub use mac_adi::{MacAdi, MacOtp, MacProvisioningStart};
 pub use allocator::Allocator;
 pub use device::{Device, DeviceData};
 pub use emu::EmuCore;
