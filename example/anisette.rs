@@ -66,6 +66,26 @@ fn main() -> Result<()> {
         signed as u64
     };
 
+    // EMU_OFFLINE_SPIM=<file>: deterministic cpim repro — skip server, feed fixed spim.
+    if let Ok(spim_file) = std::env::var("EMU_OFFLINE_SPIM") {
+        let spim_b64 = std::fs::read_to_string(&spim_file)?;
+        let spim = STANDARD.decode(spim_b64.trim().as_bytes())?;
+        let start = adi.start_provisioning(dsid, &spim)?;
+        println!("SESSION 0x{:x}", start.session);
+        println!("CPIM_LEN {}", start.cpim.len());
+        let hx: String = start.cpim.iter().map(|b| format!("{b:02x}")).collect();
+        println!("CPIM {hx}");
+        if let (Ok(pf), Ok(tf)) = (std::env::var("EMU_OFFLINE_PTM"), std::env::var("EMU_OFFLINE_TK")) {
+            let ptm = STANDARD.decode(std::fs::read_to_string(&pf)?.trim().as_bytes())?;
+            let tk = STANDARD.decode(std::fs::read_to_string(&tf)?.trim().as_bytes())?;
+            match adi.end_provisioning(start.session, &ptm, &tk) {
+                Ok(()) => println!("END_RESULT OK"),
+                Err(e) => println!("END_RESULT ERR {e:?}"),
+            }
+        }
+        return Ok(());
+    }
+
     let is_provisioned = adi.is_machine_provisioned(dsid)?;
 
     if !is_provisioned {

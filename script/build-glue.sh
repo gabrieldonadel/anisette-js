@@ -16,8 +16,8 @@ NODE_DIST_WASM="${DIST_DIR}/anisette_rs.node.wasm"
 
 
 
-WEB_EXPORTED_FUNCTIONS='["_malloc","_free","_anisette_init_from_blobs","_anisette_is_machine_provisioned","_anisette_start_provisioning","_anisette_end_provisioning","_anisette_request_otp","_anisette_get_cpim_ptr","_anisette_get_cpim_len","_anisette_get_session","_anisette_get_otp_ptr","_anisette_get_otp_len","_anisette_get_mid_ptr","_anisette_get_mid_len","_anisette_last_error_ptr","_anisette_last_error_len","_anisette_fs_write_file","_anisette_fs_read_file","_anisette_fs_read_ptr","_anisette_fs_read_len","_anisette_idbfs_sync","_anisette_set_identifier","_anisette_set_provisioning_path"]'
-NODE_EXPORTED_FUNCTIONS='["_malloc","_free","_anisette_init_from_blobs","_anisette_is_machine_provisioned","_anisette_start_provisioning","_anisette_end_provisioning","_anisette_request_otp","_anisette_get_cpim_ptr","_anisette_get_cpim_len","_anisette_get_session","_anisette_get_otp_ptr","_anisette_get_otp_len","_anisette_get_mid_ptr","_anisette_get_mid_len","_anisette_last_error_ptr","_anisette_last_error_len","_anisette_fs_write_file","_anisette_fs_read_file","_anisette_fs_read_ptr","_anisette_fs_read_len","_anisette_set_identifier","_anisette_set_provisioning_path"]'
+WEB_EXPORTED_FUNCTIONS='["_malloc","_free","_anisette_init_from_blobs","_anisette_is_machine_provisioned","_anisette_start_provisioning","_anisette_end_provisioning","_anisette_request_otp","_anisette_get_cpim_ptr","_anisette_get_cpim_len","_anisette_get_session","_anisette_get_otp_ptr","_anisette_get_otp_len","_anisette_get_mid_ptr","_anisette_get_mid_len","_anisette_last_error_ptr","_anisette_last_error_len","_anisette_fs_write_file","_anisette_fs_read_file","_anisette_fs_read_ptr","_anisette_fs_read_len","_anisette_idbfs_sync","_anisette_set_identifier","_anisette_set_provisioning_path","_anisette_mac_init_from_blob","_anisette_mac_initialize","_anisette_mac_is_provisioned","_anisette_mac_start_provisioning","_anisette_mac_end_provisioning","_anisette_mac_set_routing","_anisette_mac_get_routing","_anisette_mac_get_routing_value","_anisette_mac_request_otp","_anisette_mac_teardown"]'
+NODE_EXPORTED_FUNCTIONS='["_malloc","_free","_anisette_init_from_blobs","_anisette_is_machine_provisioned","_anisette_start_provisioning","_anisette_end_provisioning","_anisette_request_otp","_anisette_get_cpim_ptr","_anisette_get_cpim_len","_anisette_get_session","_anisette_get_otp_ptr","_anisette_get_otp_len","_anisette_get_mid_ptr","_anisette_get_mid_len","_anisette_last_error_ptr","_anisette_last_error_len","_anisette_fs_write_file","_anisette_fs_read_file","_anisette_fs_read_ptr","_anisette_fs_read_len","_anisette_set_identifier","_anisette_set_provisioning_path","_anisette_mac_init_from_blob","_anisette_mac_initialize","_anisette_mac_is_provisioned","_anisette_mac_start_provisioning","_anisette_mac_end_provisioning","_anisette_mac_set_routing","_anisette_mac_get_routing","_anisette_mac_get_routing_value","_anisette_mac_request_otp","_anisette_mac_teardown"]'
 WEB_EXPORTED_RUNTIME_METHODS='["FS","HEAPU8","UTF8ToString","stringToUTF8","lengthBytesUTF8"]'
 NODE_EXPORTED_RUNTIME_METHODS='["HEAPU8","UTF8ToString","stringToUTF8","lengthBytesUTF8"]'
 
@@ -35,6 +35,7 @@ mkdir -p "${DIST_DIR}"
 #   bash "${ROOT_DIR}/test/rebuild-unicorn.sh"
 # fi
 
+bash "${ROOT_DIR}/script/setup-wasm-vendor.sh"
 pushd "${ROOT_DIR}" >/dev/null
 if [[ "${BUILD_MODE}" == "release" ]]; then
   cargo build --release --target wasm32-unknown-emscripten
@@ -49,6 +50,7 @@ EMCC_INPUTS=(
   "${UNICORN_BUILD_DIR}/libunicorn-common.a"
   "${UNICORN_BUILD_DIR}/libaarch64-softmmu.a"
   "${UNICORN_BUILD_DIR}/libarm-softmmu.a"
+  "${UNICORN_BUILD_DIR}/libx86_64-softmmu.a"
 )
 
 for f in "${EMCC_INPUTS[@]}"; do
@@ -70,6 +72,7 @@ emcc \
   -sALLOW_MEMORY_GROWTH=1 \
   -sINITIAL_MEMORY=268435456 \
   -sWASM_BIGINT=1 \
+  -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sFORCE_FILESYSTEM=1 \
   -sASSERTIONS=1 \
   -sEXPORTED_FUNCTIONS="${WEB_EXPORTED_FUNCTIONS}" \
@@ -86,6 +89,7 @@ emcc \
   -sALLOW_MEMORY_GROWTH=1 \
   -sINITIAL_MEMORY=268435456 \
   -sWASM_BIGINT=1 \
+  -sEMULATE_FUNCTION_POINTER_CASTS=1 \
   -sFORCE_FILESYSTEM=0 \
   -sASSERTIONS=1 \
   -sEXPORTED_FUNCTIONS="${NODE_EXPORTED_FUNCTIONS}" \

@@ -1,10 +1,10 @@
 prefix=${pcfiledir}/../../../unicorn
 exec_prefix=${prefix}
-libdir=${exec_prefix}/build
+libdir=${exec_prefix}/build-x86
 includedir=${exec_prefix}/include
 
 Name: unicorn
-Description: Unicorn engine static library (wasm build)
+Description: Unicorn engine static library (wasm build, x86 enabled)
 Version: 2.1.1
-Libs: -L${libdir} -lunicorn -lunicorn-common -laarch64-softmmu -larm-softmmu
+Libs: -L${libdir} -lunicorn -lunicorn-common -laarch64-softmmu -larm-softmmu -lx86_64-softmmu
 Cflags: -I${includedir}
