@@ -13,6 +13,9 @@ pub const IMPORT_ADDRESS: u64 = 0xA000_0000;
 pub const IMPORT_SIZE: u64 = 0x1000;
 pub const IMPORT_LIBRARY_STRIDE: u64 = 0x0100_0000;
 pub const IMPORT_LIBRARY_COUNT: usize = 10;
+/// 8-byte cells backing data imports (Apple constants like kCFBooleanTrue) so each reads distinct.
+pub const DATA_IMPORT_BASE: u64 = 0x6800_0000;
+pub const DATA_IMPORT_SIZE: u64 = 0x1_0000;
 
 pub const TEMP_ALLOC_BASE: u64 = 0x0008_0000_0000;
 pub const TEMP_ALLOC_SIZE: u64 = 0x1000_0000;

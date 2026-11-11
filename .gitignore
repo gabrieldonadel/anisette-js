@@ -8,3 +8,4 @@ js/node_modules/*
 *.so
 *.wasm
 frontend/.vscode/extensions.json
+.wasm-vendor/

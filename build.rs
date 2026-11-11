@@ -27,6 +27,7 @@ fn main() {
         "libunicorn-common.a",
         "libaarch64-softmmu.a",
         "libarm-softmmu.a",
+        "libx86_64-softmmu.a",
     ];
     for lib in required_libs {
         let path = unicorn_build_dir.join(lib);
@@ -56,6 +57,7 @@ fn main() {
         "unicorn-common",
         "aarch64-softmmu",
         "arm-softmmu",
+        "x86_64-softmmu",
     ] {
         println!("cargo:rustc-link-lib=static={lib}");
     }

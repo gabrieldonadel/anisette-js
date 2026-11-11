@@ -3,16 +3,18 @@ use std::ffi::{CStr, c_char};
 use std::fs;
 use std::path::Path;
 
-use crate::{Adi, AdiInit, sync_idbfs};
+use crate::{Adi, AdiInit, MacAdi, sync_idbfs};
 
 #[derive(Default)]
 struct ExportState {
     adi: Option<Adi>,
+    mac_adi: Option<MacAdi>,
     last_error: String,
     cpim: Vec<u8>,
     session: u32,
     otp: Vec<u8>,
     mid: Vec<u8>,
+    routing: u64,
     read_buf: Vec<u8>,
 }
 
@@ -82,6 +84,175 @@ fn install_adi(adi: Adi) {
         state.mid.clear();
         state.session = 0;
     });
+}
+
+fn with_mac_adi_mut<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut MacAdi) -> Result<T, String>,
+{
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let adi = state
+            .mac_adi
+            .as_mut()
+            .ok_or_else(|| "Mac ADI is not initialized".to_string())?;
+        f(adi)
+    })
+}
+
+fn clear_result_bufs() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.cpim.clear();
+        state.otp.clear();
+        state.mid.clear();
+        state.session = 0;
+        state.routing = 0;
+    });
+}
+
+// --- Mac path: drive the macOS CoreADI directly (no storeservicescore). Reuses the shared
+// cpim/session/otp/mid getters + the fs_* / idbfs exports; only the ADI steps differ. ---
+
+/// Load the macOS CoreADI x86_64 Mach-O and resolve the dispatcher. `dsid` on the mac calls is the
+/// account-less pseudo-DSID -2 (passed as i64 from JS). `host_uuid` is a 32-char hex string (16
+/// bytes) hashed into the machine id via gethostuuid — pass a per-device value and keep it with the
+/// store (a NULL pointer keeps the stub default). It is set before the library loads.
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_init_from_blob(
+    coreadi_ptr: *const u8,
+    coreadi_len: usize,
+    host_uuid: *const c_char,
+) -> i32 {
+    let result = (|| -> Result<(), String> {
+        let coreadi = unsafe { input_bytes(coreadi_ptr, coreadi_len)? };
+        if let Some(h) = unsafe { optional_c_string(host_uuid)? }
+            && !h.is_empty()
+        {
+            // SAFETY: single-threaded before the emulator starts; gethostuuid reads this.
+            unsafe { std::env::set_var("EMU_HOSTUUID", &h) };
+        }
+        let adi = MacAdi::new(coreadi).map_err(|e| format!("Mac ADI init failed: {e}"))?;
+        STATE.with(|state| state.borrow_mut().mac_adi = Some(adi));
+        clear_result_bufs();
+        Ok(())
+    })();
+    finish(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_initialize() -> i32 {
+    finish(with_mac_adi_mut(|adi| {
+        adi.initialize().map_err(|e| format!("Initialize failed: {e}"))
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_is_provisioned(dsid: i64) -> i32 {
+    let result = (|| -> Result<i32, String> {
+        let mut out = -1;
+        with_mac_adi_mut(|adi| {
+            out = if adi.is_machine_provisioned(dsid).map_err(|e| e.to_string())? { 1 } else { 0 };
+            Ok(())
+        })?;
+        Ok(out)
+    })();
+    match result {
+        Ok(v) => { clear_last_error(); v }
+        Err(e) => { set_last_error(e); -1 }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_start_provisioning(dsid: i64, spim_ptr: *const u8, spim_len: usize) -> i32 {
+    let result = (|| -> Result<(), String> {
+        let spim = unsafe { input_bytes(spim_ptr, spim_len)? };
+        let out = with_mac_adi_mut(|adi| {
+            adi.start_provisioning(dsid, &spim)
+                .map_err(|e| format!("start_provisioning failed: {e}"))
+        })?;
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.cpim = out.cpim;
+            state.session = out.session;
+        });
+        Ok(())
+    })();
+    finish(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_end_provisioning(
+    session: u32,
+    ptm_ptr: *const u8,
+    ptm_len: usize,
+    tk_ptr: *const u8,
+    tk_len: usize,
+) -> i32 {
+    let result = (|| -> Result<(), String> {
+        let ptm = unsafe { input_bytes(ptm_ptr, ptm_len)? };
+        let tk = unsafe { input_bytes(tk_ptr, tk_len)? };
+        with_mac_adi_mut(|adi| {
+            adi.end_provisioning(session, &ptm, &tk)
+                .map_err(|e| format!("end_provisioning failed: {e}"))
+        })
+    })();
+    finish(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_set_routing(dsid: i64, routing: u64) -> i32 {
+    finish(with_mac_adi_mut(|adi| {
+        adi.set_routing(dsid, routing).map_err(|e| format!("set_routing failed: {e}"))
+    }))
+}
+
+/// Query the stored IDMS routing; result read via `anisette_mac_get_routing_value()`.
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_get_routing(dsid: i64) -> i32 {
+    let result = (|| -> Result<(), String> {
+        let r = with_mac_adi_mut(|adi| {
+            adi.get_routing(dsid).map_err(|e| format!("get_routing failed: {e}"))
+        })?;
+        STATE.with(|state| state.borrow_mut().routing = r);
+        Ok(())
+    })();
+    finish(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_get_routing_value() -> u64 {
+    STATE.with(|state| state.borrow().routing)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_request_otp(dsid: i64) -> i32 {
+    let result = (|| -> Result<(), String> {
+        let out = with_mac_adi_mut(|adi| {
+            adi.request_otp(dsid).map_err(|e| format!("request_otp failed: {e}"))
+        })?;
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.otp = out.otp;
+            state.mid = out.machine_id;
+        });
+        Ok(())
+    })();
+    finish(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn anisette_mac_teardown() -> i32 {
+    finish(with_mac_adi_mut(|adi| {
+        adi.teardown().map_err(|e| format!("teardown failed: {e}"))
+    }))
+}
+
+fn finish(result: Result<(), String>) -> i32 {
+    match result {
+        Ok(()) => { clear_last_error(); 0 }
+        Err(e) => { set_last_error(e); -1 }
+    }
 }
 
 fn init_adi_from_parts(

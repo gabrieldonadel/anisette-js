@@ -18,6 +18,8 @@ impl Allocator {
         }
     }
 
+    pub fn cursor(&self) -> u64 { self.base + self.offset }
+
     pub fn alloc(&mut self, request: u64) -> Result<u64, VmError> {
         let length = align_up(request.max(1), PAGE_SIZE);
         let address = self.base + self.offset;
