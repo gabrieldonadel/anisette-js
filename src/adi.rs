@@ -40,7 +40,13 @@ pub struct Adi {
 impl Adi {
     pub fn new(init: AdiInit) -> Result<Self, VmError> {
         debug_print(format!("Constructing ADI for '{}'", init.library_path));
-        let mut core = EmuCore::new_arm64()?;
+        // EMU_ARCH=x86_64 runs the x86_64 Android SSC+core (used to capture the x86_64
+        // vdfut768ig opcode table for the native macOS core); default stays arm64.
+        let mut core = if std::env::var("EMU_ARCH").as_deref() == Ok("x86_64") {
+            EmuCore::new_x86_64()?
+        } else {
+            EmuCore::new_arm64()?
+        };
         core.set_library_root(&init.library_path);
         core.register_library_blob("libstoreservicescore.so", init.storeservicescore);
         core.register_library_blob("libCoreADI.so", init.coreadi);
@@ -70,6 +76,10 @@ impl Adi {
             p_provisioning_end,
             p_otp_request,
         };
+
+        if std::env::var("EMU_TRACE_VDFUT").is_ok() {
+            adi.core.install_vdfut_trace()?;
+        }
 
         adi.load_library_with_path(&init.library_path)?;
 
@@ -115,6 +125,13 @@ impl Adi {
         let ret = self
             .core
             .invoke_cdecl(self.p_load_library_with_path, &[p_path])?;
+        // EMU_FORCE_LOADLIB_OK: treat the macOS env-authorization refusal (-45076/-45020)
+        // as success and continue, to test whether the gate is a mere authorization stamp
+        // or sets state required by provisioning/OTP downstream.
+        if std::env::var("EMU_FORCE_LOADLIB_OK").is_ok() && ret != 0 {
+            eprintln!("[force-loadlib] ADILoadLibraryWithPath returned {ret}; forcing OK and continuing");
+            return Ok(());
+        }
         ensure_zero_return("ADILoadLibraryWithPath", ret)
     }
     pub fn start_provisioning(
@@ -170,6 +187,10 @@ impl Adi {
             return Ok(true);
         }
         if code == -45061 {
+            return Ok(false);
+        }
+        if std::env::var("EMU_FORCE_ADI_OK").is_ok() {
+            eprintln!("[force-adi-ok] ADIGetLoginCode returned {code}; treating as not-provisioned");
             return Ok(false);
         }
 

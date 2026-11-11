@@ -68,22 +68,27 @@ impl<'a> ProvisioningSession<'a> {
 </plist>"#;
 
         let start_bytes = self.post_with_time(&start_url, start_body)?;
+        let _ = std::fs::write("/tmp/start.plist", &start_bytes);
         let start_plist = parse_plist(&start_bytes)?;
 
         let spim_b64 = plist_get_string_in_response(&start_plist, "spim")?;
         println!("{spim_b64}");
         let spim = STANDARD.decode(spim_b64.as_bytes())?;
+        let ptxid = plist_get_string_in_response(&start_plist, "ptxid").unwrap_or("").to_string();
+        eprintln!("[prov] start ptxid={ptxid}");
 
         let start = self.adi.start_provisioning(dsid, &spim)?;
         println!("{}", bytes_to_hex(&start.cpim));
         let cpim_b64 = STANDARD.encode(&start.cpim);
 
         let finish_body = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Header</key>\n  <dict/>\n  <key>Request</key>\n  <dict>\n    <key>cpim</key>\n    <string>{}</string>\n  </dict>\n</dict>\n</plist>",
-            cpim_b64
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Header</key>\n  <dict/>\n  <key>Request</key>\n  <dict>\n    <key>cpim</key>\n    <string>{}</string>\n    <key>ptxid</key>\n    <string>{}</string>\n  </dict>\n</dict>\n</plist>",
+            cpim_b64, ptxid
         );
 
         let finish_bytes = self.post_with_time(&finish_url, &finish_body)?;
+        let _ = std::fs::write("/tmp/finish.plist", &finish_bytes);
+        eprintln!("[prov] finish response {} bytes", finish_bytes.len());
         let finish_plist = parse_plist(&finish_bytes)?;
 
         let ptm_b64 = plist_get_string_in_response(&finish_plist, "ptm")?;
@@ -121,6 +126,7 @@ impl<'a> ProvisioningSession<'a> {
     fn get(&self, url: &str) -> Result<Vec<u8>> {
         let request = self.with_common_headers(self.client.get(url), None);
         let response = request.send()?.error_for_status()?;
+        for (k,v) in response.headers().iter() { eprintln!("[hdr:get] {}: {:?}", k, v); }
         Ok(response.bytes()?.to_vec())
     }
 
@@ -131,6 +137,7 @@ impl<'a> ProvisioningSession<'a> {
             Some(&client_time),
         );
         let response = request.send()?.error_for_status()?;
+        for (k,v) in response.headers().iter() { eprintln!("[hdr:post] {}: {:?}", k, v); }
         Ok(response.bytes()?.to_vec())
     }
 
@@ -168,7 +175,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 fn build_http_client(apple_root_pem: Option<&Path>) -> Result<Client> {
-    let mut builder = Client::builder().timeout(Duration::from_secs(5));
+    let mut builder = Client::builder().timeout(Duration::from_secs(15)).cookie_store(true).http1_only();
 
     if let Some(cert) = load_apple_root_cert(apple_root_pem)? {
         builder = builder.add_root_certificate(cert);

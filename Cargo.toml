@@ -18,12 +18,11 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 goblin = "0.10.4"
 plist = "1.8.0"
 rand = "0.8.5"
-reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls", "cookies"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.17"
 # unicorn-engine: the TCI/emscripten fork at ../unicorn (required for the wasm build,
-# which can't JIT). For a stock native build (no ../unicorn), swap this for
-# `unicorn-engine = "2.1.1"` — see the open-adi instrumentation patch.
-unicorn-engine = { path = "../unicorn", default-features = false, features = ["arch_arm", "arch_aarch64"] }
+# which can't JIT). x86 added for the macOS CoreADI (x86_64) direct-dispatch path.
+unicorn-engine = { path = "../unicorn", default-features = false, features = ["arch_arm", "arch_aarch64", "arch_x86"] }
 uuid = { version = "1.18.1", features = ["v4"] }
